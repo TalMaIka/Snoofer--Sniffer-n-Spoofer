@@ -68,6 +68,14 @@ struct sniff_tcp {
         u_short th_sum;                 /* checksum */
         u_short th_urp;                 /* urgent pointer */
 };
+struct sniff_icmp
+{
+    unsigned char icmp_type;        // ICMP message type
+    unsigned char icmp_code;        // Error code
+    unsigned short int icmp_chksum; // Checksum for ICMP Header and data
+    unsigned short int icmp_id;     // Used for identifying request
+    unsigned short int icmp_seq;    // Sequence number
+};
 
 void
 got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
@@ -208,11 +216,9 @@ void print_flags(u_char flags,FILE* filep) {
     }
 }
 
-/*
- * dissect/print packet
- */
-void
-got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
+
+//got_packet() ICMP
+void got_packet_icmp(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 {
 
 	static int count = 1;                   /* packet counter */
@@ -220,12 +226,11 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	/* declare pointers to packet headers */
 	const struct sniff_ethernet *ethernet;  /* The ethernet header [1] */
 	const struct sniff_ip *ip;              /* The IP header */
-	const struct sniff_tcp *tcp;            /* The TCP header */
+	const struct sniff_icmp *icmp;            /* The TCP header */
 	const char *payload;                    /* Packet payload */
 
 	int size_ip;
-	int size_tcp;
-	int size_payload;
+	int size_icmp;
 
 	/* define ethernet header */
 	ethernet = (struct sniff_ethernet*)(packet);
@@ -237,25 +242,23 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 		printf("   * Invalid IP header length: %u bytes\n", size_ip);
 		return;
 	}
-
 	/* define/compute tcp payload (segment) offset */
-	payload = (u_char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
+	payload = (u_char *)(packet + SIZE_ETHERNET + size_ip + size_icmp);
 
 	/* compute tcp payload (segment) size */
-	size_payload = ntohs(ip->ip_len) - (size_ip + size_tcp);
+	int size_payload = ntohs(ip->ip_len) - (size_ip + size_icmp);
 
 	/* define/compute tcp header offset */
-		tcp = (struct sniff_tcp*)(packet + SIZE_ETHERNET + size_ip);
-		size_tcp = TH_OFF(tcp)*4;
-		if (size_tcp < 20) {
-			printf("   * Invalid TCP header length: %u bytes\n", size_tcp);
+		icmp = (struct sniff_icmp*)(packet + SIZE_ETHERNET + size_ip);
+		size_icmp = sizeof(struct sniff_icmp);
+		if (size_icmp < 8 && ip->ip_p == 1) {
+			printf("   * Invalid ICMP header length: %u bytes\n", size_icmp);
 			return;
 		}
-	
 	FILE* filep = fopen("315734616_341157501.txt","a");
 	/* print source and destination IP addresses */
 	fprintf(filep,"\n\n~~~~~~~~~~Packet number %d~~~~~~~~~~~~~~\n", count++);
-	fprintf(filep,"\t Total packet size:%d\n",SIZE_ETHERNET+size_ip+size_tcp+size_payload);
+	fprintf(filep,"\t Total packet size:%d\n",SIZE_ETHERNET+size_ip+size_icmp+size_payload);
 	fprintf(filep,"~~~~~~~~~~~Ethernet HEADER~~~~~~~~~~~~~~\n");
 	fprintf(filep,"[+] Source Address: %s\n", ethernet->ether_shost);
 	fprintf(filep,"[+] Dest Address: %s\n", ethernet->ether_dhost);
@@ -272,17 +275,25 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	fprintf(filep,"  [-] Checksum:%d\n",ntohs(ip->ip_sum));
 	fprintf(filep,"[+] Source IP:%s\n",inet_ntoa(ip->ip_src));
 	fprintf(filep,"[+] Dest IP:%s\n",inet_ntoa(ip->ip_dst));
-	fprintf(filep,"~~~~~~~~~~~~~TCP HEADER~~~~~~~~~~~~~~~~~\n");
-	fprintf(filep,"[+] Source port: %d\n", ntohs(tcp->th_sport));
-	fprintf(filep,"[+] Dest port: %d\n", ntohs(tcp->th_dport));
-	fprintf(filep,"[+] TCP seq len: %d\n", size_payload);
-	fprintf(filep,"[+] Flags: ");
-	print_flags(tcp->th_flags,filep);
-	fprintf(filep,"\n");
-	fprintf(filep,"[+] Window: %d\n", ntohs(tcp->th_win));
-	fprintf(filep,"[+] Checksum: %d\n", ntohs(tcp->th_sum));
+	fprintf(filep,"~~~~~~~~~~~~~ICMP HEADER~~~~~~~~~~~~~~~~~\n");
+	fprintf(filep,"[+] Msg Type: %d\n", ntohs(icmp->icmp_type));
+	fprintf(filep,"[+] Error code: %d\n", ntohs(icmp->icmp_code));
+	fprintf(filep,"[+] Checksum: %d\n", ntohs(icmp->icmp_chksum));
+	fprintf(filep,"[+] ICMP ID: %d\n", ntohs(icmp->icmp_id));
+	fprintf(filep,"[+] ICMP seq: %d\n", ntohs(icmp->icmp_seq));
+	int counter = 0;
+	char string1[20];
+	char string2[20];
+		if(counter++ == 0){
+			sprintf(string1,"%s",inet_ntoa(ip->ip_src));
+			sprintf(string2,"%s",inet_ntoa(ip->ip_dst));
+		}
+	char command[100];
+	if(icmp->icmp_type==8){
+		sprintf(command,"sudo ./spoofer icmp %s %s",string2,string1);
+		system(command);
+	}
 	
-
 	/*
 	 * Print payload data; it might be binary, so don't just
 	 * treat it as a string.
@@ -295,7 +306,6 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	return;
 }
 
-
 int main(int argc, char **argv)
 {
 
@@ -303,7 +313,7 @@ int main(int argc, char **argv)
 	char errbuf[PCAP_ERRBUF_SIZE];		/* error buffer */
 	pcap_t *handle;				/* packet capture handle */
 
-	char filter_exp[] = "tcp";		/* filter expression [3] */
+	char filter_exp[] = "icmp";		/* filter expression [3] */
 	struct bpf_program fp;			/* compiled filter program (expression) */
 	bpf_u_int32 mask;			/* subnet mask */
 	bpf_u_int32 net;			/* ip */
@@ -361,9 +371,8 @@ int main(int argc, char **argv)
 		    filter_exp, pcap_geterr(handle));
 		exit(EXIT_FAILURE);
 	}
+		pcap_loop(handle, num_packets, got_packet_icmp, NULL);
 
-	/* now we can set our callback function */
-	pcap_loop(handle, num_packets, got_packet, NULL);
 
 	/* cleanup */
 	pcap_freecode(&fp);
